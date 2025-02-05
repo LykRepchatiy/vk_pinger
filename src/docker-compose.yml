@@ -1,0 +1,21 @@
+version: '3.9'
+
+services:
+  postgres:
+    build: .
+    container_name: pg_container
+    ports:
+      - "5433:5432"
+    env_file:
+      - .env
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - pg_network
+
+volumes:
+  pg_data:
+
+networks:
+  pg_network:
+    driver: bridge

@@ -2,50 +2,167 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/client"
+)
+
+var (
+	logger = log.New(os.Stdout, "docker-pinger: ", log.LstdFlags|log.Lmicroseconds|log.Lshortfile)
 )
 
 type DBContainer struct {
-	IP        string    `json:"ip"`
-	Status    string    `json:"status"`
-	Timestamp time.Time `json:"timestamp"`
-	Datestamp string    `json:"datestamp"`
+	IP        map[string]string `json:"ip"`
+	Status    string            `json:"status"`
+	Timestamp time.Time         `json:"timestamp"`
+	Datestamp time.Time         `json:"datestamp"`
 }
 
-func createRequest(container DBContainer) (*http.Request, error){
-	byteSl, err := json.Marshal(container)
+// TODO must be global variable
+type Env struct {
+	Networks []string
+	BackURL  string
+}
+
+func sendToBack(req []DBContainer, env Env) {
+	json, err := json.Marshal(req)
 	if err != nil {
-		log.Println(err)
-		return nil, err
+		logger.Println(err)
 	}
-	req, err := http.NewRequest(http.MethodPost, "http://localhost:8080/putStatus", bytes.NewBuffer(byteSl))
+	http.Post(env.BackURL, "application/json", bytes.NewBuffer(json))
+}
+
+func ParseEnv() Env {
+	networksEnv := os.Getenv("DOCKER_NETWORKS")
+	if networksEnv == "" {
+		logger.Fatal("DOCKER_NETWORKS environment variable is required")
+		os.Exit(1)
+	}
+	backendUrl := os.Getenv("BACKEND_URL")
+	if backendUrl == "" {
+		logger.Fatal("BACKEND_URL environment variable is required")
+		os.Exit(1)
+	}
+	networkList := strings.Split(networksEnv, ",")
+	logger.Printf("Monitoring networks: %v\n", networkList)
+	return Env{networkList, backendUrl}
+}
+
+func checkContainers(cli *client.Client, env Env) {
+	allContainers := make(map[string]types.Container)
+
+	// тут как раз перебираем контейнеры из сетей
+	for _, network := range env.Networks {
+		containers, err := getNetworkContainers(cli, network)
+		if err != nil {
+			logger.Printf("Error getting containers in network %s: %v\n", network, err)
+			continue
+		}
+
+		for _, c := range containers {
+			if _, exists := allContainers[c.ID]; !exists {
+				allContainers[c.ID] = c
+			}
+		}
+	}
+
+	req := make([]DBContainer, 1)
+	for _, c := range allContainers {
+		status, err := getContainerStatus(cli, c.ID)
+		if err != nil {
+			logger.Printf("Container %s status error: %v\n", c.Names[0], err)
+			continue
+		}
+
+		containerNetworks := getContainerNetworks(c, env.Networks)
+		// nets := strings.Join(containerNetworks, ", ")
+		ips := getContainerIPs(c, env.Networks)
+		req = append(req, DBContainer{
+			IP:        ips,
+			Status:    status,
+			Timestamp: time.Now(),
+			Datestamp: time.Now(),
+		})
+		go sendToBack(req, env)
+		logger.Printf(
+			"Container: %-20s Status: %-10s Networks: %-30s IPs: %v\n",
+			c.Names[0],
+			status,
+			strings.Join(containerNetworks, ", "),
+			ips,
+		)
+	}
+}
+
+func getContainerIPs(c types.Container, networkList []string) map[string]string {
+	ips := make(map[string]string)
+	for _, network := range networkList {
+		if net, exists := c.NetworkSettings.Networks[network]; exists {
+			ips[network] = net.IPAddress
+		}
+	}
+	return ips
+}
+
+// Получение списка сетей контейнера из списка
+func getContainerNetworks(c types.Container, networkList []string) []string {
+	var networks []string
+	for _, network := range networkList {
+		if _, exists := c.NetworkSettings.Networks[network]; exists {
+			networks = append(networks, network)
+		}
+	}
+	return networks
+}
+
+// Получение контейнеров в сети
+func getNetworkContainers(cli *client.Client, network string) ([]types.Container, error) {
+	filter := filters.NewArgs()
+	filter.Add("network", network)
+
+	return cli.ContainerList(
+		context.Background(),
+		container.ListOptions{
+			Filters: filter,
+		},
+	)
+}
+
+// Получение статуса контейнера
+func getContainerStatus(cli *client.Client, containerID string) (string, error) {
+	info, err := cli.ContainerInspect(context.Background(), containerID)
 	if err != nil {
-		log.Println(err)
+		return "", err
 	}
-	req.Header.Set("Content-type", "application/json")
-	return req, nil
+	return info.State.Status, nil
 }
 
 func main() {
-	client := http.Client{}
-	container := DBContainer{
-			IP: "0.0.0.0",
-			Status: "down",
-			Timestamp: time.Now(),
-			Datestamp: "2025-02-07T01:06:25.601011292+03:00",
-	}
-	req, err := createRequest(container)
+	// парсим названия сетей
+	env := ParseEnv()
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		log.Println(err)
+		logger.Fatal("Docker client init error:", err)
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Println(err)
+
+	if _, err := cli.Ping(context.Background()); err != nil {
+		logger.Fatalf("Docker API connection error: %v", err)
 	}
-	if resp.StatusCode == http.StatusOK {
-		log.Println("OK")
+	logger.Println("Successfully connected to Docker API")
+
+	// основной цикл проверки
+	for {
+		checkContainers(cli, env)
+		time.Sleep(10 * time.Second) // тут таймауты из env прикрутить
 	}
 }

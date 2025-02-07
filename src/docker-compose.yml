@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   postgres:
     build: .
@@ -11,21 +9,73 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
     networks:
-      - pg_network
-
+      - app_network
   backend:
-    build: ./backend
-    container_name: backend
+    image: my-backend-app
+    build:
+      context: ./backend
     depends_on:
       - postgres
-    networks:
-      - pg_network
+    environment:
+      - PORT=8080
     ports:
       - "8080:8080"
+    networks:
+      app_network:
+        aliases:
+          - backend-service
+  pinger:
+    image: my-pinger-app
+    build:
+      context: ./pinger
+    environment:
+      - DOCKER_NETWORKS=app_network,hello_network
+      - BACKEND_URL=http://backend:8080/putStatus
+      - DOCKER_API_VERSION=1.43 # может быть ненужным
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - app_network
+      - hello_network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: "0:0"
+    restart: unless-stopped
+
+  hw1:
+    image: alpine:latest
+    container_name: hw1
+    build: ./hw1
+    networks:
+      - hello_network
+    tty: true
+    depends_on: 
+      - pinger
+    ports:
+      - "9999:9999"
+
+  # hw2:
+  #   image: alpine:latest
+  #   container_name: hw2
+  #   build: ./hw2
+  #   networks:
+  #     - hello_network
+  #   tty: true
+  #   depends_on: 
+  #     - pinger
+  #   ports:
+  #     - "9090:9090"
 
 volumes:
   pg_data:
 
 networks:
-  pg_network:
+  app_network:
+    name: app_network
     driver: bridge
+    attachable: true
+  hello_network:
+    name: hello_network
+    driver: bridge
+    attachable: true

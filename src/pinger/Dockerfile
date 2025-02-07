@@ -1,17 +1,12 @@
-# Базовый образ с Go
-FROM golang:1.22.2
+FROM golang:1.22-alpine
 
-# Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
 
-# Копируем файлы проекта в контейнер
+COPY go.mod ./
+RUN go mod download
+
 COPY . .
 
-# Компилируем приложение
-RUN go build -o backend .
+RUN go build -o main .
 
-# Указываем порт для прослушивания
-EXPOSE 8080
-
-# Указываем команду для запуска приложения
-CMD ["./backend"]
+CMD ["./main"]

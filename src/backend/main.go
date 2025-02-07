@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -12,46 +14,67 @@ import (
 
 type DBContainer struct {
 	ID        uint      `gorm:"primaryKey"`
-	IP        string    `gorm:"uniqueIndex;not null"`
-	Status    string    `gorm:"type:varchar(255);not null"`
-	TimeStamp time.Time `gorm:"not null"`
-	DateStamp string    `gorm:"type:varchar(255)"`
+	IP        string    `json:"ip" gorm:"uniqueIndex;not null"`
+	Status    string    `json:"status" gorm:"type:varchar(255);not null"`
+	Timestamp time.Time `json:"timestamp" gorm:"not null"`
+	Datestamp string    `json:"datestamp" gorm:"type:varchar(255)"`
 }
 
-func dbConnect() {
-	container := DBContainer{
-		IP:        "0.0.0.0",
-		Status:    "down",
-		TimeStamp: time.Now(),
-		DateStamp: time.Now().String(),
+func PutStatus(w http.ResponseWriter, r *http.Request) {
+	var dbContainer DBContainer
+	if r.Method != http.MethodPost {
+		log.Println("wrong method")
+		return
 	}
-	log.Println(container.TimeStamp)
-	time.Sleep(2 * time.Second)
-	newContainer := DBContainer{
-		IP:        "0.0.0.0",
-		Status:    "ok",
-		TimeStamp: time.Now(),
-		DateStamp: time.Now().String(),
-	}
-	dsn := "host=localhost user=myuser port=5433 dbname=mydatabase password='mypassword'"
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	byteReq, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
+		return
 	}
-	db.AutoMigrate(&DBContainer{})
-	db.Create(&container)
-	db.Clauses(clause.OnConflict{
+	err = json.Unmarshal(byteReq, &dbContainer)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	db, err := dbConnect()
+	if err != nil {
+		log.Println(err)
+		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer sqlDB.Close()
+	err = db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "ip"}},
 		DoUpdates: clause.Assignments(map[string]interface{}{
-			"status":     newContainer.Status,
-			"time_stamp": newContainer.TimeStamp,
-			"date_stamp": gorm.Expr("CASE WHEN ? = 'ok' THEN ? END", newContainer.Status, newContainer.DateStamp),
+			"status":    dbContainer.Status,
+			"timestamp": dbContainer.Timestamp,
+			"datestamp": gorm.Expr("CASE WHEN ? = 'ok' THEN ? ELSE db_containers.datestamp END", dbContainer.Status, dbContainer.Datestamp),
 		}),
-	}).Create(&newContainer)
+	}).Create(&dbContainer).Error
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func dbConnect() (*gorm.DB, error) {
+	dsn := "host=postgres user=myuser port=5432 dbname=mydatabase password='mypassword'"
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, err
+	}
+	db.AutoMigrate(&DBContainer{})
+	return db, nil
 }
 
 func main() {
-	// http.HandleFunc("/ping", pingFunc)
+	http.HandleFunc("/putStatus", PutStatus)
 	dbConnect()
 	http.ListenAndServe(":8080", nil)
 }

@@ -5,62 +5,86 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
-// TODO [error] unsupported data type: &map[], можно в string через запятую
-type DBContainer struct {
-	ID        uint              `gorm:"primaryKey"`
-	IP        map[string]string `json:"ip" gorm:"uniqueIndex;not null"`
-	Status    string            `json:"status" gorm:"type:varchar(255);not null"`
-	Timestamp time.Time         `json:"timestamp" gorm:"not null"`
-	Datestamp time.Time         `json:"datestamp" gorm:"not null"`
+
+type Request struct {
+	ContainerID string            `json:"containerID"`
+	IP          map[string]string `json:"ip"`
+	Status      string            `json:"status"`
+	Timestamp   time.Time         `json:"timestamp"`
+	Datestamp   time.Time         `json:"datestamp"`
 }
 
+type DBContainer struct {
+	ID          uint      `gorm:"primaryKey"`
+	ContainerID string    `gorm:"uniqueIndex;not null"`
+	IP          string    `gorm:"type:varchar(255);not null"`
+	Status      string    `gorm:"type:varchar(255);not null"`
+	Timestamp   time.Time `gorm:"not null"`
+	Datestamp   time.Time `gorm:"not null"`
+}
+
+var (
+	logger = log.New(os.Stdout, "docker-pinger: ", log.LstdFlags|log.Lmicroseconds|log.Lshortfile)
+)
+
 func PutStatus(w http.ResponseWriter, r *http.Request) {
-	dbContainers := make([]DBContainer, 1)
+	reqs := make([]Request, 1)
 	if r.Method != http.MethodPost {
-		log.Println("wrong method")
+		logger.Println("wrong method")
 		return
 	}
 	byteReq, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Println(err)
+		logger.Println(err)
 		return
 	}
-	err = json.Unmarshal(byteReq, &dbContainers)
+	err = json.Unmarshal(byteReq, &reqs)
 	if err != nil {
-		log.Println(err)
+		logger.Println(err)
 		return
+	}
+	DBconts := make([]DBContainer, len(reqs))
+	for i, req := range reqs {
+		for net, ip := range req.IP {
+			DBconts[i].IP = net + ", " + ip + "\n"
+		}
+		DBconts[i].ContainerID = req.ContainerID
+		DBconts[i].Status = req.Status
+		DBconts[i].Timestamp = req.Timestamp
+		DBconts[i].Datestamp = req.Datestamp
 	}
 	db, err := dbConnect()
 	if err != nil {
-		log.Println(err)
+		logger.Println(err)
 		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 	sqlDB, err := db.DB()
 	if err != nil {
-		log.Println(err)
+		logger.Println(err)
 		return
 	}
 	defer sqlDB.Close()
-	
-	// TODO gorutine
-	for _, dbContainer := range dbContainers {
+
+	for _, dbContainer := range DBconts {
 		err = db.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "ip"}},
+			Columns: []clause.Column{{Name: "container_id"}},
 			DoUpdates: clause.Assignments(map[string]interface{}{
+				"ip":        gorm.Expr("CASE WHEN ? = 'running' THEN ? ELSE db_containers.ip END", dbContainer.Status, dbContainer.IP),
 				"status":    dbContainer.Status,
 				"timestamp": dbContainer.Timestamp,
-				"datestamp": gorm.Expr("CASE WHEN ? = 'ok' THEN ? ELSE db_containers.datestamp END", dbContainer.Status, dbContainer.Datestamp),
+				"datestamp": gorm.Expr("CASE WHEN ? = 'running' THEN ? ELSE db_containers.datestamp END", dbContainer.Status, dbContainer.Datestamp),
 			}),
 		}).Create(&dbContainer).Error
 		if err != nil {
-			log.Println(err)
+			logger.Println(err)
 			return
 		}
 	}

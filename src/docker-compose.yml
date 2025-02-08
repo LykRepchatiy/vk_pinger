@@ -31,7 +31,7 @@ services:
     environment:
       - DOCKER_NETWORKS=app_network,hello_network
       - BACKEND_URL=http://backend:8080/putStatus
-      - DOCKER_API_VERSION=1.43 # может быть ненужным
+      - DOCKER_API_VERSION=1.43
     depends_on:
       backend:
         condition: service_started
@@ -54,18 +54,6 @@ services:
       - pinger
     ports:
       - "9999:9999"
-
-  # hw2:
-  #   image: alpine:latest
-  #   container_name: hw2
-  #   build: ./hw2
-  #   networks:
-  #     - hello_network
-  #   tty: true
-  #   depends_on: 
-  #     - pinger
-  #   ports:
-  #     - "9090:9090"
 
 volumes:
   pg_data:

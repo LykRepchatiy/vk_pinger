@@ -1,37 +1,38 @@
 services:
+
   postgres:
     build: .
-    container_name: pg_container
+    container_name: pg-container
     ports:
       - "5433:5432"
     env_file:
-      - .env
+      - postgres.env
     volumes:
       - pg_data:/var/lib/postgresql/data
     networks:
       - app_network
+
   backend:
     image: my-backend-app
     build:
       context: ./backend
     depends_on:
       - postgres
-    environment:
-      - PORT=8080
+    env_file:
+      - backend.env
     ports:
       - "8080:8080"
     networks:
       app_network:
         aliases:
           - backend-service
+
   pinger:
     image: my-pinger-app
     build:
       context: ./pinger
-    environment:
-      - DOCKER_NETWORKS=app_network,hello_network
-      - BACKEND_URL=http://backend:8080/putStatus
-      - DOCKER_API_VERSION=1.43
+    env_file:
+      - pinger.env
     depends_on:
       backend:
         condition: service_started
@@ -40,24 +41,20 @@ services:
       - hello_network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    user: "0:0"
-    restart: unless-stopped
 
-  hw1:
+  HelloWorldCont:
     image: alpine:latest
-    container_name: hw1
-    build: ./hw1
+    container_name: hello-world
+    build: ./HelloWorldCont
     networks:
       - hello_network
     tty: true
-    depends_on: 
-      - pinger
     ports:
       - "9999:9999"
 
   frontend:
     build: ./frontend/front
-    container_name: frontend_container
+    container_name: frontend-container
     depends_on:
       - backend
     environment:
@@ -79,5 +76,3 @@ networks:
     name: hello_network
     driver: bridge
     attachable: true
-
-    

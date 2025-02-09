@@ -55,6 +55,18 @@ services:
     ports:
       - "9999:9999"
 
+  frontend:
+    build: ./frontend/front
+    container_name: frontend_container
+    depends_on:
+      - backend
+    environment:
+      - BACKEND_URL=http://backend:8080
+    ports:
+      - "3000:3000"
+    networks:
+      - app_network
+
 volumes:
   pg_data:
 
@@ -67,3 +79,5 @@ networks:
     name: hello_network
     driver: bridge
     attachable: true
+
+    
